@@ -92,16 +92,22 @@ VOID Wineventproc(
   (void)dwmsEventTime;
 
   if (is_taskbar_window(hwnd)) {
-    int len = GetWindowTextLength(hwnd);
-    if (len == 0) return;
 
-    char* title = (char*)malloc(len + 1);
-    if (title == NULL) return;
+    DWORD pid;
+    if (GetWindowThreadProcessId(hwnd, &pid) == 0) {
+      return;
+    }
 
-    GetWindowText(hwnd, title, len + 1);
-
-    printf("Focusing on: %s\n", title);
-    free(title);
+    switch (event) {
+    case EVENT_OBJECT_SHOW:
+      printf("object show: %lu\n", pid);
+      break;
+    case EVENT_OBJECT_DESTROY:
+      printf("object destroy: %lu\n", pid);
+      break;
+    default:
+      break;
+    }
   }
 }
 
@@ -109,8 +115,8 @@ int main(void) {
   EnumWindows(loop_windows, 0);
 
   HWINEVENTHOOK hook = SetWinEventHook(
-      EVENT_OBJECT_FOCUS,
-      EVENT_OBJECT_FOCUS,
+      EVENT_OBJECT_DESTROY,
+      EVENT_OBJECT_SHOW,
       NULL,
       Wineventproc,
       0,
