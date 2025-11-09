@@ -23,7 +23,10 @@ int main(int argc, char* argv[]) {
   }
 
   MSG msg;
-  while (GetMessage(&msg, NULL, 0, 0)) {}
+  while (GetMessage(&msg, NULL, 0, 0)) {
+    TranslateMessage(&msg);
+    DispatchMessageA(&msg);
+  }
 
   UnhookWindowsHookEx(hook);
   FreeLibrary(lib);
