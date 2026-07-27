@@ -25,6 +25,9 @@ face   : oc.face
 glyphs : map[Font_Key]Glyph_Info
 atlas  : Atlas
 
+dpi   : u16
+scale : f32
+
 Atlas :: struct {
     width: uint,
     height: uint,
@@ -59,6 +62,14 @@ main :: proc() {
 
     win32.SetProcessDpiAwarenessContext(win32.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
 
+    monitor := win32.MonitorFromPoint({0, 0}, .MONITOR_DEFAULTTONULL);
+
+    dpi_x, dpi_y: win32.UINT
+    win32.GetDpiForMonitor(monitor, .MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y)
+
+    dpi = u16(dpi_x)
+    scale = f32(dpi) / 96
+
     instance := win32.HINSTANCE(win32.GetModuleHandleW(nil))
 
     if win32.RegisterClassW(&{
@@ -72,7 +83,10 @@ main :: proc() {
     }
     defer win32.UnregisterClassW(CLASS_NAME, instance)
 
-    rect := win32.RECT{ 0, 0, WIDTH, HEIGHT }
+    width := int(f32(WIDTH) * scale)
+    height := int(f32(HEIGHT) * scale)
+
+    rect := win32.RECT{ 0, 0, win32.LONG(width), win32.LONG(height) }
     style := win32.WS_OVERLAPPED | win32.WS_CAPTION | win32.WS_SYSMENU | win32.WS_MINIMIZEBOX
 
     win32.AdjustWindowRectEx(&rect, style, win32.FALSE, win32.WS_EX_APPWINDOW)
@@ -98,8 +112,6 @@ main :: proc() {
     }
 
     defer win32.DestroyWindow(hwnd)
-
-    fmt.println("window dpi:", win32.GetDpiForWindow(hwnd))
 
     levels := [?]d3d11.FEATURE_LEVEL{
         ._11_0,
@@ -382,17 +394,17 @@ main :: proc() {
 
         contants := cast(^Contants)resource.pData
         contants.mvp = {
-            2.0 / WIDTH,   0.0,             0.0,   -1.0,
-            0.0,           -2.0 / HEIGHT,   0.0,   1.0,
-            0.0,           0.0,             0.5,   0.5,
-            0.0,           0.0,             0.0,   1.0,
+            2.0 / f32(width), 0.0,                0.0, -1.0,
+            0.0,              -2.0 / f32(height), 0.0, 1.0,
+            0.0,              0.0,                0.5, 0.5,
+            0.0,              0.0,                0.0, 1.0,
         }
     }
 
     device_context->OMSetRenderTargets(1, &rtv, nil);
     device_context->OMSetBlendState(blend_state, &[4]f32{ 0.0, 0.0, 0.0, 0.0 }, 0xFFFFFFFF);
 
-    device_context->RSSetViewports(1, &d3d11.VIEWPORT{ 0, 0, WIDTH, HEIGHT, 0.0, 1.0 })
+    device_context->RSSetViewports(1, &d3d11.VIEWPORT{ 0, 0, f32(width), f32(height), 0.0, 1.0 })
     device_context->RSSetState(rasterizer)
     device_context->IASetInputLayout(layout)
     device_context->VSSetConstantBuffers(0, 1, &const_buf)
@@ -494,15 +506,15 @@ main :: proc() {
                     )
 
                     radius := [4]f32{
-                        cmd.renderData.rectangle.cornerRadius.topLeft,
-                        cmd.renderData.rectangle.cornerRadius.topRight,
-                        cmd.renderData.rectangle.cornerRadius.bottomRight,
-                        cmd.renderData.rectangle.cornerRadius.bottomLeft,
+                        cmd.renderData.rectangle.cornerRadius.topLeft * scale,
+                        cmd.renderData.rectangle.cornerRadius.topRight * scale,
+                        cmd.renderData.rectangle.cornerRadius.bottomRight * scale,
+                        cmd.renderData.rectangle.cornerRadius.bottomLeft * scale,
                     }
 
                     instances[instances_len] = {
-                        { cmd.boundingBox.width, cmd.boundingBox.height },
-                        { cmd.boundingBox.x, cmd.boundingBox.y },
+                        { cmd.boundingBox.width * scale, cmd.boundingBox.height * scale },
+                        { cmd.boundingBox.x * scale, cmd.boundingBox.y * scale },
                         { 1.0, 1.0 }, { 0.0, 0.0 },
                         radius,
                         col,
@@ -510,11 +522,11 @@ main :: proc() {
                     }
                     instances_len += 1
                 case .Text:
-                    oc.set_size(&face, i32(cmd.renderData.text.fontSize) << 6, 72)
+                    oc.set_size(&face, oc.i26p6(f32(cmd.renderData.text.fontSize) * scale * 64.0), 96)
 
                     pen := [2]f32{
-                        cmd.boundingBox.x,
-                        cmd.boundingBox.y + f32(oc.mul_16p16(oc.i16p16(face.ascent), face.size.scale) >> 6),
+                        cmd.boundingBox.x * scale,
+                        cmd.boundingBox.y * scale + f32(oc.mul_16p16(oc.i16p16(face.ascent), face.size.scale) >> 6),
                     }
 
                     text := cmd.renderData.text.stringContents
@@ -524,11 +536,34 @@ main :: proc() {
                             font_size = oc.i26p6(cmd.renderData.text.fontSize) << 6,
                         }
 
-                        glyph := glyphs[key]
+                        glyph, ok := glyphs[key]
+                        if !ok {
+                            metrics: oc.glyph_metrics
+                            idx := oc.get_char_index(&face, u32(rune))
+                            oc.get_glyph_metrics(&face, idx, 0, &metrics)
+
+                            ext: oc.extent
+                            oc.render_glyph(&face, idx, &ext, nil, 0)
+
+                            rec := stbrp.Rect{
+                                w = stbrp.Coord(ext.cols) + 1,
+                                h = stbrp.Coord(ext.rows) + 1,
+                            }
+                            stbrp.pack_rects(&atlas.ctx, &rec, 1)
+
+                            oc.render_glyph(&face, idx, &ext, raw_data(atlas.pixels[rec.y * stbrp.Coord(atlas.width) + rec.x:]), atlas.width)
+
+                            glyph = {
+                                x = rec.x, y = rec.y,
+                                w = stbrp.Coord(ext.cols), h = stbrp.Coord(ext.rows),
+                                metrics = metrics,
+                            }
+                            glyphs[key] = glyph
+                        }
 
                         instances[instances_len] = {
                             { f32(glyph.w), f32(glyph.h) },
-                            { math.floor(pen.x + f32(glyph.metrics.bearing_x >> 6)), math.floor(pen.y - f32(glyph.metrics.bearing_y >> 6)) },
+                            { math.floor((pen.x + f32(glyph.metrics.bearing_x >> 6))), math.floor(pen.y - f32(glyph.metrics.bearing_y >> 6)) },
                             { f32(glyph.w) / f32(atlas.width), f32(glyph.h) / f32(atlas.width) },
                             { f32(glyph.x) / f32(atlas.width), f32(glyph.y) / f32(atlas.height) },
                             { 0.0, 0.0, 0.0, 0.0 },
@@ -615,40 +650,19 @@ handle_clay_errors :: proc "c" (error: clay.ErrorData) {
 }
 
 measure_clay_text :: proc "c" (text: clay.StringSlice, config: ^clay.TextElementConfig, user_data: rawptr) -> clay.Dimensions {
-    oc.set_size(&face, i32(config.fontSize) << 6, 72)
-
     width : oc.i26p6 = 0
 
+    oc.set_size(&face, oc.i26p6(config.fontSize) << 6, 96)
     for rune in string(text.chars[:text.length]) {
         key := Font_Key{
             charcode = rune,
             font_size = oc.i26p6(config.fontSize) << 6,
         }
 
+        idx := oc.get_char_index(&face, u32(rune))
+
         metrics: oc.glyph_metrics
-        if glyph, ok := glyphs[key]; ok {
-            metrics = glyph.metrics
-        } else {
-            idx := oc.get_char_index(&face, u32(rune))
-            oc.get_glyph_metrics(&face, idx, 0, &metrics)
-
-            ext: oc.extent
-            oc.render_glyph(&face, idx, &ext, nil, 0)
-
-            rec := stbrp.Rect{
-                w = stbrp.Coord(ext.cols) + 1,
-                h = stbrp.Coord(ext.rows) + 1,
-            }
-            stbrp.pack_rects(&atlas.ctx, &rec, 1)
-
-            oc.render_glyph(&face, idx, &ext, raw_data(atlas.pixels[rec.y * stbrp.Coord(atlas.width) + rec.x:]), atlas.width)
-            
-            glyphs[key] = {
-                x = rec.x, y = rec.y,
-                w = stbrp.Coord(ext.cols), h = stbrp.Coord(ext.rows),
-                metrics = metrics,
-            }
-        }
+        oc.get_glyph_metrics(&face, idx, 0, &metrics)
 
         width += metrics.advance;
     }
