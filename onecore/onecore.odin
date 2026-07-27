@@ -2,7 +2,7 @@ package onecore
 
 import "core:c"
 
-foreign import onecore "onecore.lib"
+foreign import onecore "../libs/onecore.lib"
 
 i16p16 :: i32
 i26p6  :: i32

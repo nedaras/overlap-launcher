@@ -57,6 +57,8 @@ main :: proc() {
     glyphs = make(map[Font_Key]Glyph_Info)
     defer delete(glyphs)
 
+    win32.SetProcessDpiAwarenessContext(win32.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+
     instance := win32.HINSTANCE(win32.GetModuleHandleW(nil))
 
     if win32.RegisterClassW(&{
@@ -96,6 +98,8 @@ main :: proc() {
     }
 
     defer win32.DestroyWindow(hwnd)
+
+    fmt.println("window dpi:", win32.GetDpiForWindow(hwnd))
 
     levels := [?]d3d11.FEATURE_LEVEL{
         ._11_0,
@@ -404,7 +408,7 @@ main :: proc() {
     }
     defer oc.free_library(lib)
 
-    if err := oc.open_face(lib, "fonts/Inter-VariableFont_opsz,wght.ttf", nil, &face); err != .ok {
+    if err := oc.open_face(lib, "fonts/arial.ttf", nil, &face); err != .ok {
         fmt.eprintln("oc::open_face failed:", err)
         return
     }

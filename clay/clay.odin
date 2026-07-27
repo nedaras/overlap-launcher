@@ -2,7 +2,7 @@ package clay
 
 import "core:c"
 
-foreign import Clay "clay.lib"
+foreign import Clay "../libs/clay.lib"
 
 String :: struct {
 	isStaticallyAllocated: c.bool,
