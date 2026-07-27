@@ -228,7 +228,7 @@ main :: proc() {
 
     blend_state: ^d3d11.IBlendState
     hr = device->CreateBlendState(&{
-        AlphaToCoverageEnable = true,
+        AlphaToCoverageEnable = false,
         RenderTarget = { 0 = {
             BlendEnable = true,
             SrcBlend = .SRC_ALPHA,
@@ -737,11 +737,11 @@ float4 ps_main(vs_out input) : SV_TARGET {
     float d = sd_rounded_box(uv, size, radii);
     float a = 1.0 - smoothstep(0.0, fade, d);
 
-    float4 col;
+    float4 col = input.col;
     if (input.ext == 0) {
-        col = input.col * tex[0].Sample(smp, input.uv);
+        col *= tex[0].Sample(smp, input.uv);
     } else {
-        col = input.col * tex[1].Sample(smp, input.uv).r;
+        col.a *= tex[1].Sample(smp, input.uv).r;
     }
     col.a *= a;
 
