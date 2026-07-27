@@ -408,7 +408,7 @@ main :: proc() {
     }
     defer oc.free_library(lib)
 
-    if err := oc.open_face(lib, "fonts/arial.ttf", nil, &face); err != .ok {
+    if err := oc.open_face(lib, "fonts/Inter-VariableFont_opsz,wght.ttf", nil, &face); err != .ok {
         fmt.eprintln("oc::open_face failed:", err)
         return
     }
