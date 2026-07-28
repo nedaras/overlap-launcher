@@ -1,7 +1,6 @@
 package main
 
 import "core:math"
-import "core:os"
 import "core:mem"
 import "base:runtime"
 import "core:fmt"
@@ -28,6 +27,10 @@ atlas  : Atlas
 dpi   : u16
 scale : f32
 
+scroll_delta : clay.Vector2
+mouse_pos    : clay.Vector2
+mouse_down   : bool
+
 Atlas :: struct {
     width: uint,
     height: uint,
@@ -47,6 +50,11 @@ Glyph_Info :: struct {
     metrics: oc.glyph_metrics,
 }
 
+Process_Info :: struct {
+    pid:  win32.DWORD,
+    name: string,
+}
+
 main :: proc() {
     atlas = Atlas{
         width = 512,
@@ -62,13 +70,13 @@ main :: proc() {
 
     win32.SetProcessDpiAwarenessContext(win32.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
 
-    monitor := win32.MonitorFromPoint({0, 0}, .MONITOR_DEFAULTTONULL);
+    monitor := win32.MonitorFromPoint({0, 0}, .MONITOR_DEFAULTTONULL)
 
     dpi_x, dpi_y: win32.UINT
     win32.GetDpiForMonitor(monitor, .MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y)
 
     dpi = u16(dpi_x)
-    scale = f32(dpi) / 96
+    scale = f32(dpi) / 96.0
 
     instance := win32.HINSTANCE(win32.GetModuleHandleW(nil))
 
@@ -104,7 +112,7 @@ main :: proc() {
         nil,
         instance,
         nil,
-    );
+    )
 
     if hwnd == nil {
         fmt.eprintln("win32::CreateWindowExW failed:", win32.GetLastError())
@@ -160,7 +168,7 @@ main :: proc() {
     hr = swap_chain->GetBuffer(0, d3d11.ITexture2D_UUID, cast(^rawptr)&back_buf)
     if win32.FAILED(hr) {
         fmt.eprintln("d3d11::ISwapChain::GetBuffer failed:", hr)
-        return;
+        return
     }
     defer back_buf->Release()
 
@@ -168,7 +176,7 @@ main :: proc() {
 	hr = device->CreateRenderTargetView(back_buf, nil, &rtv)
     if win32.FAILED(hr) {
         fmt.eprintln("d3d11::IDevice::CreateRenderTargetView failed:", hr)
-        return;
+        return
     }
     defer rtv->Release()
 
@@ -191,7 +199,7 @@ main :: proc() {
     hr = device->CreateVertexShader(vs_blob->GetBufferPointer(), vs_blob->GetBufferSize(), nil, &vs)
     if win32.FAILED(hr) {
         fmt.eprintln("d3d11::IDevice::CreateVertexShader failed:", hr)
-        return;
+        return
     }
     defer vs->Release()
 
@@ -214,7 +222,7 @@ main :: proc() {
     hr = device->CreatePixelShader(ps_blob->GetBufferPointer(), ps_blob->GetBufferSize(), nil, &ps)
     if win32.FAILED(hr) {
         fmt.eprintln("d3d11::IDevice::CreatePixelShader failed:", hr)
-        return;
+        return
     }
     defer ps->Release()
 
@@ -234,7 +242,7 @@ main :: proc() {
     hr = device->CreateInputLayout(&input[0], len(input), vs_blob->GetBufferPointer(), vs_blob->GetBufferSize(), &layout)
     if win32.FAILED(hr) {
         fmt.eprintln("d3d11::IDevice::CreateInputLayout failed:", hr)
-        return;
+        return
     }
     defer layout->Release()
 
@@ -254,7 +262,7 @@ main :: proc() {
     }, &blend_state)
     if win32.FAILED(hr) {
         fmt.eprintln("d3d11::IDevice::CreateBlendState failed:", hr)
-        return;
+        return
     }
     defer blend_state->Release()
 
@@ -270,7 +278,7 @@ main :: proc() {
     }, &sampler)
     if win32.FAILED(hr) {
         fmt.eprintln("d3d11::IDevice::CreateSamplerState failed:", hr)
-        return;
+        return
     }
     defer sampler->Release()
 
@@ -278,7 +286,7 @@ main :: proc() {
     hr = device->CreateRasterizerState(&{ FillMode = .SOLID, CullMode = .NONE }, &rasterizer)
     if win32.FAILED(hr) {
         fmt.eprintln("d3d11::IDevice::CreateRasterizerState failed:", hr)
-        return;
+        return
     }
     defer rasterizer->Release()
 
@@ -323,7 +331,8 @@ main :: proc() {
     hr = device->CreateBuffer(&{
         Usage = .DYNAMIC,
         CPUAccessFlags = {.WRITE},
-        ByteWidth = 256 * size_of(Instance),
+        // todo: make it dynamic as this is just stupid
+        ByteWidth = 1024 * 1024 * size_of(Instance),
         BindFlags = {.VERTEX_BUFFER},
     }, nil, &instance_buf)
     if win32.FAILED(hr) {
@@ -401,8 +410,8 @@ main :: proc() {
         }
     }
 
-    device_context->OMSetRenderTargets(1, &rtv, nil);
-    device_context->OMSetBlendState(blend_state, &[4]f32{ 0.0, 0.0, 0.0, 0.0 }, 0xFFFFFFFF);
+    device_context->OMSetRenderTargets(1, &rtv, nil)
+    device_context->OMSetBlendState(blend_state, &[4]f32{ 0.0, 0.0, 0.0, 0.0 }, 0xFFFFFFFF)
 
     device_context->RSSetViewports(1, &d3d11.VIEWPORT{ 0, 0, f32(width), f32(height), 0.0, 1.0 })
     device_context->RSSetState(rasterizer)
@@ -438,12 +447,40 @@ main :: proc() {
     stbrp.init_target(&atlas.ctx, 512, 512, raw_data(atlas.nodes), i32(len(atlas.nodes)))
     stbrp.setup_heuristic(&atlas.ctx, .Skyline_default)
 
+    procs := make([dynamic]Process_Info)
+    defer delete(procs)
+
+    snap := win32.CreateToolhelp32Snapshot(win32.TH32CS_SNAPPROCESS, 0)
+    if snap == nil {
+        fmt.eprintln("win32::CreateToolhelp32Snapshot failed:", win32.GetLastError())
+        return
+    }
+    defer win32.CloseHandle(snap)
+
+    pe := win32.PROCESSENTRY32W{ dwSize = size_of(win32.PROCESSENTRY32W) }
+    if win32.Process32FirstW(snap, &pe) {
+        for {
+            append(&procs, Process_Info{
+                name = win32.utf16_to_utf8(pe.szExeFile[:]) or_else "<unknown>",
+                pid = pe.th32ProcessID,
+            })
+
+            if !win32.Process32NextW(snap, &pe) {
+                break
+            }
+        }
+    }
+
     win32.ShowWindow(hwnd, win32.SW_SHOW)
 
     msg: win32.MSG
     for win32.GetMessageW(&msg, nil, 0, 0) > 0 {
         win32.TranslateMessage(&msg)
         win32.DispatchMessageW(&msg)
+
+        clay.SetPointerState(mouse_pos, mouse_down)
+        clay.UpdateScrollContainers(true, scroll_delta, 0)
+        defer scroll_delta = {}
     
         clay.BeginLayout()
 
@@ -454,27 +491,46 @@ main :: proc() {
                     width = clay.SizingGrow({}),
                     height = clay.SizingGrow({}),
                 },
-                padding = clay.PaddingAll(16),
-                childGap = 16,
+                padding = clay.PaddingAll(8),
+                childGap = 4,
                 layoutDirection = .TopToBottom,
+            },
+            clip = {
+                vertical = true,
+                childOffset = clay.GetScrollOffset(),
             },
             backgroundColor = { 16, 25, 30, 255 },
         }) {
-            for _ in 0 ..< 5 {
+            for p in procs {
                 if clay.UI()({
                     layout = {
                         sizing = {
                             width = clay.SizingGrow({}),
-                            height = clay.SizingFixed(48),
                         },
                         childAlignment = {
-                            x = .Center,
                             y = .Center
-                        }
+                        },
+                        padding = clay.PaddingAll(8),
                     },
                     backgroundColor = { 26, 35, 40, 255 },
                 }) {
-                    clay.Text("Hello World!", clay.TextConfig({ fontSize = 12 }))
+                    if clay.UI()({
+                        layout = {
+                            childGap = 2,
+                            layoutDirection = .TopToBottom,
+                        }
+                    }) {
+                        clay.TextDynamic(p.name, clay.TextConfig({ fontSize = 10, textColor = { 255, 255, 255, 255 } }))
+                        clay.TextDynamic(fmt.tprintf("PID: %d", p.pid), clay.TextConfig({ fontSize = 8, textColor = { 209, 213, 220, 255 } }))
+                    }
+                    if clay.UI()({ 
+                        layout = { 
+                            sizing = { width = clay.SizingGrow({}) }
+                        }
+                    }) {}
+                    if clay.UI()({}) {
+                        clay.Text("SELECTED", clay.TextConfig({ fontSize = 10, textColor = { 0, 223, 162, 255 } }))
+                    }
                 }
             }
         }
@@ -506,15 +562,15 @@ main :: proc() {
                     )
 
                     radius := [4]f32{
-                        cmd.renderData.rectangle.cornerRadius.topLeft * scale,
-                        cmd.renderData.rectangle.cornerRadius.topRight * scale,
+                        cmd.renderData.rectangle.cornerRadius.topLeft     * scale,
+                        cmd.renderData.rectangle.cornerRadius.topRight    * scale,
                         cmd.renderData.rectangle.cornerRadius.bottomRight * scale,
-                        cmd.renderData.rectangle.cornerRadius.bottomLeft * scale,
+                        cmd.renderData.rectangle.cornerRadius.bottomLeft  * scale,
                     }
 
                     instances[instances_len] = {
                         { cmd.boundingBox.width * scale, cmd.boundingBox.height * scale },
-                        { cmd.boundingBox.x * scale, cmd.boundingBox.y * scale },
+                        { cmd.boundingBox.x     * scale, cmd.boundingBox.y      * scale },
                         { 1.0, 1.0 }, { 0.0, 0.0 },
                         radius,
                         col,
@@ -522,18 +578,28 @@ main :: proc() {
                     }
                     instances_len += 1
                 case .Text:
-                    oc.set_size(&face, oc.i26p6(f32(cmd.renderData.text.fontSize) * scale * 64.0), 96)
+                    font_size := f32_to_i26p6(f32(cmd.renderData.text.fontSize) * scale) 
+                    oc.set_size(&face, font_size, 96)
+
+                    ascent := oc.mul_16p16(oc.i16p16(face.ascent), face.size.scale)
+
+                    col := rgba(
+                        u8(cmd.renderData.text.textColor.r),
+                        u8(cmd.renderData.text.textColor.g),
+                        u8(cmd.renderData.text.textColor.b),
+                        u8(cmd.renderData.text.textColor.a),
+                    )
 
                     pen := [2]f32{
-                        cmd.boundingBox.x * scale,
-                        cmd.boundingBox.y * scale + f32(oc.mul_16p16(oc.i16p16(face.ascent), face.size.scale) >> 6),
+                        math.round(cmd.boundingBox.x * scale),
+                        math.round(cmd.boundingBox.y * scale + i26p6_to_f32(ascent)),
                     }
 
                     text := cmd.renderData.text.stringContents
                     for rune in string(text.chars[:text.length]) {
                         key := Font_Key{
                             charcode = rune,
-                            font_size = oc.i26p6(cmd.renderData.text.fontSize) << 6,
+                            font_size = font_size,
                         }
 
                         glyph, ok := glyphs[key]
@@ -563,16 +629,16 @@ main :: proc() {
 
                         instances[instances_len] = {
                             { f32(glyph.w), f32(glyph.h) },
-                            { math.floor((pen.x + f32(glyph.metrics.bearing_x >> 6))), math.floor(pen.y - f32(glyph.metrics.bearing_y >> 6)) },
+                            { pen.x + f32(glyph.metrics.bearing_x >> 6), pen.y - f32(glyph.metrics.bearing_y >> 6) },
                             { f32(glyph.w) / f32(atlas.width), f32(glyph.h) / f32(atlas.width) },
                             { f32(glyph.x) / f32(atlas.width), f32(glyph.y) / f32(atlas.height) },
                             { 0.0, 0.0, 0.0, 0.0 },
-                            0xFFFFFFFF,
+                            col,
                             67,
                         }
                         instances_len += 1
                         
-                        pen.x += f32(glyph.metrics.advance >> 6);
+                        pen.x += f32(glyph.metrics.advance >> 6)
                     }
                 }
             }
@@ -608,14 +674,14 @@ main :: proc() {
         hr = swap_chain->Present(1, {})
         if win32.FAILED(hr) {
             fmt.eprintln("d3d11::ISwapChain::Present failed:", hr)
-            return;
+            return
         }
     }
-    file, ok := os.create("atlas.pgm")
-    defer os.close(file)
-
-    os.write(file, transmute([]u8)(fmt.tprintf("P5\n%d %d\n255\n", 512, 512)))
-    os.write(file, atlas.pixels)
+    // file, ok := os.create("atlas.pgm")
+    // defer os.close(file)
+    //
+    // os.write(file, transmute([]u8)(fmt.tprintf("P5\n%d %d\n255\n", 512, 512)))
+    // os.write(file, atlas.pixels)
 }
 
 rgba :: proc(r, g, b, a: u8) -> u32 {
@@ -651,33 +717,47 @@ handle_clay_errors :: proc "c" (error: clay.ErrorData) {
 
 measure_clay_text :: proc "c" (text: clay.StringSlice, config: ^clay.TextElementConfig, user_data: rawptr) -> clay.Dimensions {
     width : oc.i26p6 = 0
+    font_size := oc.i26p6(config.fontSize) << 6
 
-    oc.set_size(&face, oc.i26p6(config.fontSize) << 6, 96)
+    oc.set_size(&face, font_size, 96)
     for rune in string(text.chars[:text.length]) {
-        key := Font_Key{
-            charcode = rune,
-            font_size = oc.i26p6(config.fontSize) << 6,
-        }
+        metrics: oc.glyph_metrics
 
         idx := oc.get_char_index(&face, u32(rune))
-
-        metrics: oc.glyph_metrics
         oc.get_glyph_metrics(&face, idx, 0, &metrics)
 
-        width += metrics.advance;
+        width += metrics.advance
     }
 
+    ascent := oc.mul_16p16(oc.i16p16(face.ascent), face.size.scale)
+    descent := oc.mul_16p16(oc.i16p16(face.descent), face.size.scale)
+
     return {
-        width = f32(width >> 6),
-        height = f32(oc.mul_16p16(oc.i16p16(face.descent + face.ascent), face.size.scale) >> 6),
+        width = i26p6_to_f32(width),
+        height = i26p6_to_f32(ascent + descent),
     }
 }
 
 WndProc :: proc "stdcall" (hwnd: win32.HWND, msg: win32.UINT, wparam: win32.WPARAM, lparam: win32.LPARAM) -> win32.LRESULT {
     switch msg {
+    case win32.WM_MOUSEMOVE:
+        x := f32(win32.LOWORD(win32.DWORD(lparam)))
+        y := f32(win32.HIWORD(win32.DWORD(lparam)))
+        mouse_pos = {x, y}
+        return 0
+    case win32.WM_MOUSEWHEEL:
+        wheel_delta := f32(win32.GET_WHEEL_DELTA_WPARAM(wparam)) / f32(win32.WHEEL_DELTA)
+        scroll_delta.y += wheel_delta * 4
+        return 0
+    case win32.WM_LBUTTONDOWN:
+        mouse_down = true
+        return 0
+    case win32.WM_LBUTTONUP:
+        mouse_down = false
+        return 0
     case win32.WM_DESTROY:
-        win32.PostQuitMessage(0);
-        return 0;
+        win32.PostQuitMessage(0)
+        return 0
     }
     return win32.DefWindowProcW(hwnd, msg, wparam, lparam)
 }
@@ -687,6 +767,14 @@ blob_to_string :: proc(blob: ^d3d.ID3DBlob) -> string {
 
     ptr := cast([^]u8)blob->GetBufferPointer()
     return string(ptr[:blob->GetBufferSize()])
+}
+
+i26p6_to_f32 :: proc "contextless" (v: oc.i26p6) -> f32 {
+    return f32(v) / 64.0
+}
+
+f32_to_i26p6 :: proc "contextless" (v: f32) -> oc.i26p6 {
+    return oc.i26p6(v * 64.0)
 }
 
 hlsl := `
